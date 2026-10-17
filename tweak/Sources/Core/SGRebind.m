@@ -5,17 +5,6 @@
 #import <string.h>
 #import "SGRebind.h"
 #import "SGLog.h"
-
-static const struct mach_header_64 *mainExecutable(intptr_t *slide) {
-    for (uint32_t i = 0; i < _dyld_image_count(); i++) {
-        const struct mach_header *header = _dyld_get_image_header(i);
-        if (header->magic != MH_MAGIC_64 || header->filetype != MH_EXECUTE) continue;
-        *slide = _dyld_get_image_vmaddr_slide(i);
-        return (const struct mach_header_64 *)header;
-    }
-    return NULL;
-}
-
 // Writes one pointer, making its page writable first; a page dyld made read only after binding
 // (__DATA_CONST, __AUTH_CONST) is copied and made read only again.
 static BOOL writeSlot(void **slot, void *value, BOOL readOnly) {
@@ -31,11 +20,7 @@ static BOOL writeSlot(void **slot, void *value, BOOL readOnly) {
     return YES;
 }
 
-BOOL SGRebindImport(const char *symbol, void *replacement, void **original) {
-    intptr_t slide = 0;
-    const struct mach_header_64 *header = mainExecutable(&slide);
-    if (!header) return NO;
-
+static BOOL rebindInHeader(const struct mach_header_64 *header, intptr_t slide, const char *symbol, void *replacement, void **original) {
     const struct segment_command_64 *linkedit = NULL;
     const struct symtab_command *symtab = NULL;
     const struct dysymtab_command *dysymtab = NULL;
@@ -90,6 +75,33 @@ BOOL SGRebindImport(const char *symbol, void *replacement, void **original) {
                 if (original && !*original) *original = held;
                 rebound = YES;
             }
+        }
+    }
+    return rebound;
+}
+
+BOOL SGRebindImport(const char *symbol, void *replacement, void **original) {
+    BOOL rebound = NO;
+    uint32_t count = _dyld_image_count();
+    for (uint32_t i = 0; i < count; i++) {
+        const struct mach_header *header = _dyld_get_image_header(i);
+        if (!header || header->magic != MH_MAGIC_64) continue;
+        const char *name = _dyld_get_image_name(i);
+
+        // Rebind in the main executable OR any non-system image (e.g. Spotify when loaded inside LiveContainer)
+        BOOL shouldCheck = (header->filetype == MH_EXECUTE);
+        if (!shouldCheck && name) {
+            if (strstr(name, "Spotify") != NULL || strstr(name, "spotify") != NULL) {
+                shouldCheck = YES;
+            } else if (strncmp(name, "/System/", 8) != 0 && strncmp(name, "/usr/lib/", 9) != 0) {
+                shouldCheck = YES;
+            }
+        }
+        if (!shouldCheck) continue;
+
+        intptr_t slide = _dyld_get_image_vmaddr_slide(i);
+        if (rebindInHeader((const struct mach_header_64 *)header, slide, symbol, replacement, original)) {
+            rebound = YES;
         }
     }
     return rebound;
