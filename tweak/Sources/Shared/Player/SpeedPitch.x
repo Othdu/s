@@ -1161,7 +1161,7 @@ static void rebind(void) {
     }
     sg_reachable = SGRebindImport("AudioOutputUnitStart", startOutput, (void **)&sg_startOutput) && sg_startOutput;
     if (!sg_startOutput) {
-        sg_startOutput = (OSStatus (*)(AudioUnit))dlsym(RTLD_DEFAULT, "AudioOutputUnitStart");
+        sg_startOutput = AudioOutputUnitStart;
     }
     if (!sg_reachable) {
         SGLog(@"audio: Spotify does not import AudioOutputUnitStart, its output cannot be reached");
