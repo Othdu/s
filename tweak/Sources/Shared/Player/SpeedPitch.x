@@ -1140,28 +1140,42 @@ BOOL SGPlayerMusicClientFormat(AudioStreamBasicDescription *format) {
     return read;
 }
 
-static void rebind(void) {
+static void setupOutputsQueue(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         mach_timebase_info_data_t timebase;
         mach_timebase_info(&timebase);
         sg_secondsPerTick = (double)timebase.numer / timebase.denom / 1e9;
         sg_outputsQueue = dispatch_queue_create("spotifyglass.outputs", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, 0));
+    });
+}
+
+static void rebind(void) {
+    setupOutputsQueue();
+    if (sg_reachable) return;
+    if (!sg_setProperty) {
         if (!SGRebindImport("AudioUnitSetProperty", setProperty, (void **)&sg_setProperty) || !sg_setProperty) {
             sg_setProperty = NULL;
             SGLog(@"redesign speed: Spotify does not import AudioUnitSetProperty, the menu offers pitch only");
         }
-        sg_reachable = SGRebindImport("AudioOutputUnitStart", startOutput, (void **)&sg_startOutput) && sg_startOutput;
-        if (!sg_reachable) {
-            SGLog(@"audio: Spotify does not import AudioOutputUnitStart, its output cannot be reached");
-            return;
-        }
+    }
+    sg_reachable = SGRebindImport("AudioOutputUnitStart", startOutput, (void **)&sg_startOutput) && sg_startOutput;
+    if (!sg_startOutput) {
+        sg_startOutput = (OSStatus (*)(AudioUnit))dlsym(RTLD_DEFAULT, "AudioOutputUnitStart");
+    }
+    if (!sg_reachable) {
+        SGLog(@"audio: Spotify does not import AudioOutputUnitStart, its output cannot be reached");
+        return;
+    }
+    if (!sg_stopOutput) {
         if (!SGRebindImport("AudioOutputUnitStop", stopOutput, (void **)&sg_stopOutput) || !sg_stopOutput) sg_stopOutput = AudioOutputUnitStop;
+    }
+    if (!sg_dispose) {
         if (!SGRebindImport("AudioComponentInstanceDispose", disposeUnit, (void **)&sg_dispose) || !sg_dispose) {
             sg_dispose = AudioComponentInstanceDispose;
             SGLog(@"audio: Spotify does not import AudioComponentInstanceDispose, a disposed output is not seen");
         }
-    });
+    }
 }
 
 BOOL SGPlayerWatchMusicOutput(SGPlayerOutputWatcher watcher) {
